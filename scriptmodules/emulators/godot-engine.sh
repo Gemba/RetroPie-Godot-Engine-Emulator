@@ -637,40 +637,36 @@ function _install_update_scraper() {
 
 # Scriptmodule functions ############################
 
-function sources_godot-engine() {
+function install_godot-engine() {
     local url="https://github.com/hiulit/RetroPie-Godot-Game-Engine-Emulator/releases/download/v${VERSION_MAJOR}.${VERSION_MINOR}.0"
 
     for version in "${GODOT_VERSIONS[@]}"; do
-        if isPlatform "x86"; then
-            downloadAndExtract "${url}/godot_${version}_x11_32.zip" "$md_build"
-        elif isPlatform "x86_64"; then
+        if isPlatform "x86_64"; then
             downloadAndExtract "${url}/godot_${version}_x11_64.zip" "$md_build"
+        elif isPlatform "x86"; then
+             downloadAndExtract "${url}/godot_${version}_x11_32.zip" "$md_build"
         elif isPlatform "aarch64"; then
             downloadAndExtract "${url}/frt_${version}_arm64.zip" "$md_build"
         elif isPlatform "rpi1"; then
-            downloadAndExtract "${url}/frt_${version}_pi1.zip" "$md_build"
-        elif isPlatform "rpi2" || isPlatform "rpi3" || isPlatform "rpi4"; then
-            downloadAndExtract "${url}/frt_${version}_pi2.zip" "$md_build"
+            downloadAndExtract "${url}/frt_${version}_pi1.zip" "$$md_build"
+        elif isPlatform "rpi"; then
+            downloadAndExtract "${url}/frt_${version}_pi2.zip" "$$md_build"
         fi
     done
-}
 
-
-function install_godot-engine() {
-    if [[ -d "$md_build" ]]; then
-        md_ret_files=($(ls "$md_build"))
-    else
-        echo "ERROR: Can't install '$RP_MODULE_ID'." >&2
-        echo "There must have been a problem downloading the sources." >&2
-        exit 1
+    mapfile -t md_ret_files < <(find "$md_build" -type f -name "*.bin" -exec basename {} \;)
+    if [[ ${#md_ret_files[@]} -eq 0 ]]; then
+            echo "ERROR: Can't install '$md_id'." >&2
+            echo "There must have been a problem downloading the engines." >&2
+            exit 1
     fi
 
     # Create the "godot-engine" ROM folder.
-    mkRomDir "$RP_MODULE_ID"
+    mkRomDir "$md_id"
 
     # Install the "godot-engine" system for the default EmulationStation theme.
     echo
-    echo "Installing the '$RP_MODULE_ID' system for the '$ES_DEFAULT_THEME' theme..."
+    echo "Installing the '$md_id' system for the '$ES_DEFAULT_THEME' theme..."
     echo
     _install_update_theme "$ES_DEFAULT_THEME"
 
@@ -716,15 +712,13 @@ function remove_godot-engine() {
 
 
 function configure_godot-engine() {
+    [[ "$md_mode" == "remove" ]] && return
     local bin_file_tmp
     local bin_files=()
     local bin_files_tmp=()
     local default
     local index
     local version
-    local audio_driver_string
-    local main_pack_string
-    local video_driver_string
 
     if [[ -d "$md_inst" ]]; then
         # Get all the files in the installation folder.
@@ -746,38 +740,62 @@ function configure_godot-engine() {
     # It will be created from scratch when adding the emulators in the "addEmulator" functions below.
     rmFileExists "$CONFIGS_DIR/emulators.cfg"
 
+    cat >> "$md_inst/godot-launcher.sh" <<_EOF_
+#! /usr/bin/env bash
+godot_bin="\$1"
+version="\$2"
+isRpi="\$3"
+rom="\$4"
+
+tmp_piggy="\$SDL_GAMECONTROLLERCONFIG"
+
+if [[ -f "$romdir/$md_id/gamecontrollerdb_user.txt" ]]; then
+    echo "Found gamecontrollerdb_user.txt" >> /dev/shm/runcommand.log
+    mapfile -t gc_user < "$romdir/$md_id/gamecontrollerdb_user.txt"
+    gc_user_str=""
+    for e in "\${gc_user[@]}"; do
+        # Workaround for Godot Engine bug: https://github.com/godotengine/godot/pull/124238
+        # Remove ",crc:<hex>" when present, until PR is merged
+        gc_user_str+="\$(echo \$e | sed -E 's/,crc:[0-9a-f]{4}//i')"
+        gc_user_str+=$'\n'
+    done
+    export SDL_GAMECONTROLLERCONFIG="\$gc_user_str"
+fi
+
+if [[ "\$version" == "2.1.6" ]]; then
+    audio_driver_string="-ad"
+    main_pack_string="-main_pack"
+    video_driver_string="-vd"
+else
+    audio_driver_string="--audio-driver"
+    main_pack_string="--main-pack"
+    video_driver_string="--video-driver"
+fi
+
+exitkey="esc"
+[[ \$isRpi -eq 1 ]] && exitkey="shift-enter"
+
+FRT_EXIT_SHORTCUT="\$exitkey" "$md_inst/\$godot_bin" \\
+\$main_pack_string "\$rom" \\
+\$audio_driver_string $AUDIO_DRIVER \\
+\$video_driver_string $VIDEO_DRIVER \\
+--fullscreen
+
+export SDL_GAMECONTROLLERCONFIG="\$tmp_piggy"
+_EOF_
+    chown "$__user":"$__group" "$md_inst/godot-launcher.sh"
+    chmod a+x "$md_inst/godot-launcher.sh"
+
     for index in "${!bin_files[@]}"; do
         default=0
         [[ "$index" -eq "${#bin_files[@]}-1" ]] && default=1 # Default to the last item (greater version) in "bin_files".
-        
+
         # Get the version from the file name.
-        version="${bin_files[$index]}"
-        # Cut between "_".
-        version="$(echo $version | cut -d'_' -f 2)"
-
-        if [[ "$version" == "2.1.6" ]]; then
-            audio_driver_string="-ad"
-            main_pack_string="-main_pack"
-            video_driver_string="-vd"
-        else
-            audio_driver_string="--audio-driver"
-            main_pack_string="--main-pack"
-            video_driver_string="--video-driver"
-        fi
-
-        if isPlatform "x86" || isPlatform "x86_64"; then
-            addEmulator "$default" "$md_id-$version" "$RP_MODULE_ID" "$md_inst/${bin_files[$index]} $main_pack_string %ROM% $audio_driver_string $AUDIO_DRIVER $video_driver_string $VIDEO_DRIVER -f"
-        else
-            local frt_keyboard_id_string=""
-            [[ -n "$FRT_KEYBOARD_ID" ]] && frt_keyboard_id_string="FRT_KEYBOARD_ID='$FRT_KEYBOARD_ID'"
-            local frt_kms_drm_device_string=""
-            [[ -n "$FRT_KMSDRM_DEVICE" ]] && frt_kms_drm_device_string="FRT_KMSDRM_DEVICE='$FRT_KMSDRM_DEVICE'"
-
-            addEmulator "$default" "$md_id-$version" "$RP_MODULE_ID" "FRT_EXIT_SHORTCUT=shift-enter $md_inst/${bin_files[$index]} $main_pack_string %ROM% $audio_driver_string $AUDIO_DRIVER $video_driver_string $VIDEO_DRIVER -f"
-        fi
+        version="$(echo "${bin_files[$index]}" | cut -d'_' -f 2)"
+        addEmulator "$default" "$md_id-$version" "$md_id" "$md_inst/godot-launcher.sh '${bin_files[$index]}' '$version' $(if isPlatform "rpi"; then echo "1"; else echo "0"; fi) %ROM%"
     done
 
-    addSystem "$RP_MODULE_ID" "Godot Engine" ".pck .zip"
+    addSystem "$md_id" "Godot Engine" ".pck .zip"
 }
 
 function gui_godot-engine() {
